@@ -14,3 +14,11 @@ build/
 .DS_Store
 .idea/
 .vscode/
+
+# рабочие документы, в репозиторий не идут
+AGENTS.md
+PLAN.md
+PROMPTS.md
+CLAUDE.md
+.claude/
+_handoff/

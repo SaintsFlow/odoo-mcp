@@ -4,26 +4,58 @@ services:
     environment:
       POSTGRES_USER: odoo
       POSTGRES_PASSWORD: odoo
+      # Odoo creates its own database, so postgres only needs a place to log in.
       POSTGRES_DB: postgres
     volumes:
       - odoo-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   odoo:
     image: odoo:17
-    depends_on: [db]
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8069:8069"
     environment:
       HOST: db
       USER: odoo
       PASSWORD: odoo
+    # First start creates the database and loads demo data, which takes a couple
+    # of minutes. The modules listed here are the ones our tools read from:
+    # partners come with base, orders with sale_management, quantities with
+    # stock, invoices with account. Demo data is on by default, so no flag.
+    command: ["odoo", "-d", "odoo", "-i", "base,sale_management,stock,account"]
+    volumes:
+      - odoo-data:/var/lib/odoo
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8069/web/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      # start_period covers the long first boot, retries cover a slow machine.
+      start_period: 120s
+      retries: 60
 
   mcp:
     build: .
-    env_file: .env
-    depends_on: [odoo]
+    # Optional on purpose: without it every compose command fails on a fresh
+    # clone, even "ps" and "down". Copy .env.example to .env before running mcp.
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      odoo:
+        condition: service_healthy
+    # The server talks over stdio for now, so it needs an open stdin to stay
+    # alive. Wave 5 adds the http transport and this port starts serving.
+    stdin_open: true
     ports:
       - "8080:8080"
 
 volumes:
   odoo-db:
+  odoo-data:

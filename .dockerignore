@@ -1,0 +1,15 @@
+.git/
+.github/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+tests/
+
+# working documents, they never belong in an image
+AGENTS.md
+PLAN.md
+PROMPTS.md
