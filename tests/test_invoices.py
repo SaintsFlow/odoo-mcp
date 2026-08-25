@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.client import OdooClient
+from src.client import OdooClient, OdooConfig
 from src.errors import OdooValidationError
 from src.tools.invoices import list_invoices
 from tests.helpers import assert_reads_as_a_fact
@@ -12,6 +12,12 @@ async def _partner_with_invoices(client: OdooClient) -> int:
     partners = await client.search_read("res.partner", [("name", "=", "Acme Corporation")], ["id"])
     assert partners, "the demo data should carry Acme Corporation"
     return int(partners[0]["id"])
+
+
+async def _every_company(client: OdooClient) -> list[int]:
+    """Companies are readable whatever the pin, only their records are not."""
+    rows = await client.search_read("res.company", [], ["name"])
+    return sorted(int(row["id"]) for row in rows)
 
 
 async def test_the_invoices_of_a_partner_come_back(odoo_client: OdooClient) -> None:
@@ -32,6 +38,25 @@ async def test_only_one_company_answers(odoo_client: OdooClient) -> None:
     invoices = await list_invoices(odoo_client, await _partner_with_invoices(odoo_client))
     assert len({invoice.currency for invoice in invoices}) == 1
     assert len({invoice.number for invoice in invoices}) == len(invoices)
+
+
+async def test_several_companies_can_answer_at_once(
+    odoo_config: OdooConfig, odoo_client: OdooClient
+) -> None:
+    """Asked for more than one company, the demo shows dollars and euros together.
+
+    Two companies invoice the same customer and number their invoices apart, so
+    the number alone no longer identifies one. Naming the company is what keeps
+    the answer readable instead of ambiguous.
+    """
+    everywhere = OdooClient(
+        odoo_config.model_copy(update={"company_ids": await _every_company(odoo_client)})
+    )
+    invoices = await list_invoices(everywhere, await _partner_with_invoices(odoo_client))
+
+    assert len({invoice.currency for invoice in invoices}) > 1
+    assert all(invoice.company for invoice in invoices)
+    assert len({(invoice.number, invoice.company) for invoice in invoices}) == len(invoices)
 
 
 async def test_the_state_filter_works(odoo_client: OdooClient) -> None:

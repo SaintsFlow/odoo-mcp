@@ -10,7 +10,13 @@ from pydantic import SecretStr
 from structlog.testing import capture_logs
 
 from src.client import OdooClient, OdooConfig
-from src.errors import OdooAccessError, OdooApiError, OdooAuthError, OdooValidationError
+from src.errors import (
+    OdooAccessError,
+    OdooApiError,
+    OdooAuthError,
+    OdooError,
+    OdooValidationError,
+)
 
 
 async def test_authenticate_returns_a_uid(odoo_client: OdooClient) -> None:
@@ -150,6 +156,43 @@ async def test_the_call_log_carries_model_method_and_timing(odoo_client: OdooCli
     assert entry["method"] == "search_read"
     assert entry["records"] == 3
     assert entry["duration_ms"] >= 0
+
+
+def test_one_company_or_several_come_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demo showing two companies at once is set up with one variable."""
+    for name, value in (
+        ("ODOO_URL", "http://odoo.invalid"),
+        ("ODOO_DB", "odoo"),
+        ("ODOO_USER", "admin"),
+        ("ODOO_PASSWORD", "secret"),
+    ):
+        monkeypatch.setenv(name, value)
+
+    monkeypatch.delenv("ODOO_COMPANY_IDS", raising=False)
+    assert OdooConfig.from_env().company_ids is None
+
+    monkeypatch.setenv("ODOO_COMPANY_IDS", "1")
+    assert OdooConfig.from_env().company_ids == [1]
+
+    monkeypatch.setenv("ODOO_COMPANY_IDS", " 1 , 3 ")
+    assert OdooConfig.from_env().company_ids == [1, 3]
+
+
+def test_a_company_that_is_not_a_number_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A company name where an id belongs would silently widen every answer."""
+    for name, value in (
+        ("ODOO_URL", "http://odoo.invalid"),
+        ("ODOO_DB", "odoo"),
+        ("ODOO_USER", "admin"),
+        ("ODOO_PASSWORD", "secret"),
+        ("ODOO_COMPANY_IDS", "AT Company"),
+    ):
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(OdooError):
+        OdooConfig.from_env()
 
 
 async def test_the_password_never_reaches_the_log(odoo_config: OdooConfig) -> None:

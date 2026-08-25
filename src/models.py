@@ -144,6 +144,7 @@ class SalesOrder(BaseModel):
     untaxed_total: float
     total: float = Field(description="Total including tax")
     currency: str
+    company: str | None = Field(default=None, description="Company the order belongs to")
     lines: list[OrderLine]
 
     ODOO_FIELDS: ClassVar[list[str]] = [
@@ -154,6 +155,7 @@ class SalesOrder(BaseModel):
         "amount_untaxed",
         "amount_total",
         "currency_id",
+        "company_id",
     ]
 
     @classmethod
@@ -169,6 +171,7 @@ class SalesOrder(BaseModel):
             untaxed_total=number(record.get("amount_untaxed")),
             total=number(record.get("amount_total")),
             currency=link_name(record.get("currency_id")) or "",
+            company=link_name(record.get("company_id")),
             lines=lines,
         )
 
@@ -182,6 +185,7 @@ class StockLevel(BaseModel):
     on_hand: float = Field(description="Physically in stock, reserved goods included")
     reserved: float = Field(description="Already promised to other orders")
     available: float = Field(description="On hand minus reserved, what can still be sold")
+    company: str | None = Field(default=None, description="Company the stock belongs to")
 
     ODOO_FIELDS: ClassVar[list[str]] = [
         "product_id",
@@ -190,6 +194,7 @@ class StockLevel(BaseModel):
         "quantity",
         "reserved_quantity",
         "available_quantity",
+        "company_id",
     ]
 
     @classmethod
@@ -201,6 +206,7 @@ class StockLevel(BaseModel):
             on_hand=number(record.get("quantity")),
             reserved=number(record.get("reserved_quantity")),
             available=number(record.get("available_quantity")),
+            company=link_name(record.get("company_id")),
         )
 
 
@@ -218,6 +224,7 @@ class Invoice(BaseModel):
     total: float
     amount_due: float = Field(description="Still unpaid out of the total")
     currency: str
+    company: str | None = Field(default=None, description="Company that issued the invoice")
 
     ODOO_FIELDS: ClassVar[list[str]] = [
         "name",
@@ -229,6 +236,7 @@ class Invoice(BaseModel):
         "amount_total",
         "amount_residual",
         "currency_id",
+        "company_id",
     ]
 
     @classmethod
@@ -247,4 +255,5 @@ class Invoice(BaseModel):
             total=number(record.get("amount_total")),
             amount_due=number(record.get("amount_residual")),
             currency=link_name(record.get("currency_id")) or "",
+            company=link_name(record.get("company_id")),
         )

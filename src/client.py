@@ -29,6 +29,22 @@ OBJECT_ENDPOINT = "/xmlrpc/2/object"
 DEFAULT_CONTEXT: dict[str, Any] = {"lang": "en_US"}
 
 REQUIRED_ENV = ("ODOO_URL", "ODOO_DB", "ODOO_USER", "ODOO_PASSWORD")
+COMPANIES_ENV = "ODOO_COMPANY_IDS"
+
+
+def _companies_from_env() -> list[int] | None:
+    """Which companies the answers may come from, empty meaning the user's own."""
+    raw = os.getenv(COMPANIES_ENV, "").strip()
+    if not raw:
+        return None
+
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if not parts or not all(part.isdigit() for part in parts):
+        raise OdooError(
+            f"{COMPANIES_ENV} has to be one company id or several separated by commas, "
+            f"like 1 or 1,3. It is {raw!r}."
+        )
+    return [int(part) for part in parts]
 
 
 class OdooConfig(BaseModel):
@@ -39,9 +55,9 @@ class OdooConfig(BaseModel):
     user: str
     # SecretStr so that a stray repr of the config cannot print the password.
     password: SecretStr
-    # Which company the answers come from. Left empty it is the company the
-    # user belongs to, which is the one thing that is always unambiguous.
-    company_id: int | None = None
+    # Which companies the answers come from. Left empty it is the one the user
+    # belongs to. Several are allowed, and then every answer names its own.
+    company_ids: list[int] | None = None
 
     @classmethod
     def from_env(cls) -> "OdooConfig":
@@ -50,18 +66,12 @@ class OdooConfig(BaseModel):
         if missing:
             raise OdooError(f"Odoo is not configured: set {', '.join(missing)}. See .env.example.")
 
-        company = os.getenv("ODOO_COMPANY_ID", "").strip()
-        if company and not company.isdigit():
-            raise OdooError(
-                f"ODOO_COMPANY_ID has to be the numeric id of a company, not {company!r}."
-            )
-
         return cls(
             url=os.environ["ODOO_URL"],
             db=os.environ["ODOO_DB"],
             user=os.environ["ODOO_USER"],
             password=SecretStr(os.environ["ODOO_PASSWORD"]),
-            company_id=int(company) if company else None,
+            company_ids=_companies_from_env(),
         )
 
     def endpoint(self, path: str) -> str:
@@ -78,7 +88,7 @@ class OdooClient:
 
     def __init__(self, config: OdooConfig) -> None:
         self._config = config
-        self._session: tuple[int, int] | None = None
+        self._session: tuple[int, list[int]] | None = None
         # Without the lock a burst of first calls would all log in at once.
         self._login_lock = asyncio.Lock()
 
@@ -87,8 +97,8 @@ class OdooClient:
         uid, _ = await self._open_session()
         return uid
 
-    async def _open_session(self) -> tuple[int, int]:
-        """The uid and the company every call is pinned to, resolved once."""
+    async def _open_session(self) -> tuple[int, list[int]]:
+        """The uid and the companies every call is pinned to, resolved once."""
         cached = self._session
         if cached is not None:
             return cached
@@ -99,16 +109,16 @@ class OdooClient:
             if cached is not None:
                 return cached
             uid = await asyncio.to_thread(self._authenticate_blocking)
-            company = self._config.company_id
-            if company is None:
-                company = await asyncio.to_thread(self._company_blocking, uid)
-            self._session = (uid, company)
+            companies = self._config.company_ids
+            if companies is None:
+                companies = [await asyncio.to_thread(self._company_blocking, uid)]
+            self._session = (uid, companies)
             structlog.get_logger().info(
                 "odoo_authenticated",
                 db=self._config.db,
                 user=self._config.user,
                 uid=uid,
-                company_id=company,
+                company_ids=companies,
             )
             return self._session
 
@@ -120,12 +130,12 @@ class OdooClient:
         kwargs: dict[str, Any] | None = None,
     ) -> Any:
         """Call any method on any model. The generic door into Odoo."""
-        uid, company = await self._open_session()
+        uid, companies = await self._open_session()
         call_kwargs = dict(kwargs or {})
         # The caller's own context wins, it usually knows better than we do.
         call_kwargs["context"] = {
             **DEFAULT_CONTEXT,
-            "allowed_company_ids": [company],
+            "allowed_company_ids": list(companies),
             **(call_kwargs.get("context") or {}),
         }
 
@@ -236,7 +246,7 @@ class OdooClient:
         if company is None:
             raise OdooApiError(
                 f"Odoo did not say which company user '{self._config.user}' belongs to. "
-                "Set ODOO_COMPANY_ID to pick one."
+                f"Set {COMPANIES_ENV} to pick one."
             )
         return company
 

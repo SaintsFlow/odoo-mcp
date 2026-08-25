@@ -27,6 +27,7 @@ ORDER_RECORD = {
     "amount_untaxed": 4350.0,
     "amount_total": 5002.5,
     "currency_id": [1, "USD"],
+    "company_id": [1, "My Company (San Francisco)"],
 }
 
 LINE_RECORD = {
@@ -58,6 +59,7 @@ INVOICE_RECORD = {
     "amount_total": 41750.0,
     "amount_residual": 41750.0,
     "currency_id": [126, "EUR"],
+    "company_id": [3, "AT Company"],
 }
 
 
@@ -139,6 +141,12 @@ def test_invoice_says_how_much_is_still_owed() -> None:
     assert invoice.total == 41750.0
     assert invoice.amount_due == 41750.0
     assert invoice.currency == "EUR"
+
+
+def test_a_record_says_which_company_it_came_from() -> None:
+    """With several companies allowed, the same invoice number appears twice."""
+    assert Invoice.from_odoo(INVOICE_RECORD).company == "AT Company"
+    assert SalesOrder.from_odoo(ORDER_RECORD, lines=[]).company == "My Company (San Francisco)"
 
 
 def test_an_unposted_invoice_has_no_dates() -> None:
