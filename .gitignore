@@ -22,3 +22,5 @@ PROMPTS.md
 CLAUDE.md
 .claude/
 _handoff/
+.cursor/
+.codex/
