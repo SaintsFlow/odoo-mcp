@@ -5,7 +5,7 @@ from mcp.server.mcpserver import MCPServer
 from src.client import OdooClient
 from src.errors import OdooValidationError
 from src.models import Partner
-from src.tools import readable_errors
+from src.tools import LOOKS_ONLY, readable_errors
 
 MAX_LIMIT = 100
 
@@ -42,7 +42,7 @@ async def search_partners(client: OdooClient, query: str, limit: int = 20) -> li
 def register(server: MCPServer, client: OdooClient) -> None:
     """Publish the partner tool on the server."""
 
-    @server.tool(name="search_partners")
+    @server.tool(name="search_partners", annotations=LOOKS_ONLY)
     @readable_errors
     async def _search_partners(query: str, limit: int = 20) -> list[Partner]:
         """Find customers and suppliers.

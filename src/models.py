@@ -132,6 +132,19 @@ class OrderLine(BaseModel):
         )
 
 
+class OrderLineInput(BaseModel):
+    """One line the agent asks to put on a new order.
+
+    The product is named by id rather than by name on purpose: the demo data
+    alone holds two different products called "Customizable Desk", and picking
+    the wrong one would be an order for the wrong goods. get_stock hands out
+    the id.
+    """
+
+    product_id: int = Field(description="Id of the product, as get_stock reports it")
+    quantity: float = Field(description="How many of it to order, above zero")
+
+
 class SalesOrder(BaseModel):
     """A sales order with its lines."""
 
@@ -179,6 +192,7 @@ class SalesOrder(BaseModel):
 class StockLevel(BaseModel):
     """How much of a product sits in one place."""
 
+    product_id: int = Field(description="Id to put on an order line for this product")
     product: str
     warehouse: str | None = None
     location: str | None = None
@@ -200,6 +214,7 @@ class StockLevel(BaseModel):
     @classmethod
     def from_odoo(cls, record: dict[str, Any]) -> "StockLevel":
         return cls(
+            product_id=link_id(record.get("product_id")) or 0,
             product=link_name(record.get("product_id")) or "",
             warehouse=link_name(record.get("warehouse_id")),
             location=link_name(record.get("location_id")),

@@ -14,6 +14,19 @@ async def test_stock_is_found_by_product_name(odoo_client: OdooClient) -> None:
     assert all("desk" in level.product.lower() for level in levels)
 
 
+async def test_a_level_carries_the_id_needed_to_order_the_product(
+    odoo_client: OdooClient,
+) -> None:
+    """Without it the agent cannot go from a stock level to an order line.
+
+    Two demo products share the name "Customizable Desk", so the name alone
+    would not even pick one of them.
+    """
+    levels = await get_stock(odoo_client, "desk")
+    assert levels
+    assert all(level.product_id > 0 for level in levels)
+
+
 async def test_a_level_names_its_warehouse(odoo_client: OdooClient) -> None:
     """A quantity without a place is not an answer in a company with two sites."""
     levels = await get_stock(odoo_client, "desk")

@@ -3,12 +3,14 @@
 import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import SecretStr
 
 from src.client import OdooClient, OdooConfig
 from src.server import SERVER_NAME, build_server, configure_logging
 
 READ_TOOLS = {"search_partners", "get_sales_order", "get_stock", "list_invoices"}
+WRITE_TOOLS = {"create_sales_order", "confirm_sales_order"}
 
 
 def _offline_server() -> MCPServer:
@@ -22,10 +24,42 @@ def _offline_server() -> MCPServer:
     return build_server(OdooClient(config))
 
 
-async def test_the_four_read_tools_are_published() -> None:
-    """Wave 2 registers the read tools. The write ones arrive in wave 3."""
+async def test_the_read_and_write_tools_are_published() -> None:
+    """Four tools that only look, two that change something."""
     tools = await _offline_server().list_tools()
-    assert {tool.name for tool in tools} == READ_TOOLS
+    assert {tool.name for tool in tools} == READ_TOOLS | WRITE_TOOLS
+
+
+async def _annotations_by_tool() -> dict[str, ToolAnnotations]:
+    """Annotations of every published tool, keyed by name.
+
+    A tool that is not published is missing from here, and the test that asks
+    for it fails on the lookup instead of quietly checking nothing.
+    """
+    published = {}
+    for tool in await _offline_server().list_tools():
+        assert tool.annotations is not None, f"{tool.name} carries no annotations"
+        published[tool.name] = tool.annotations
+    return published
+
+
+async def test_the_write_tools_are_marked_destructive() -> None:
+    """A client that asks before changing anything has to know which tools change it."""
+    published = await _annotations_by_tool()
+    for name in WRITE_TOOLS:
+        assert published[name].destructive_hint is True
+        assert published[name].read_only_hint is False
+
+
+async def test_the_read_tools_are_marked_read_only() -> None:
+    """Without this the destructive mark on the other two says nothing.
+
+    MCP treats a tool with no annotations as destructive by default, so leaving
+    the read tools bare would put all six in the same bucket.
+    """
+    published = await _annotations_by_tool()
+    for name in READ_TOOLS:
+        assert published[name].read_only_hint is True
 
 
 async def test_every_tool_explains_itself() -> None:
@@ -45,6 +79,8 @@ async def test_the_tools_ask_for_meaningful_arguments() -> None:
     assert arguments["get_sales_order"] == {"order_id"}
     assert arguments["get_stock"] == {"product_query"}
     assert arguments["list_invoices"] == {"partner_id", "state"}
+    assert arguments["create_sales_order"] == {"partner_id", "lines"}
+    assert arguments["confirm_sales_order"] == {"order_id"}
 
 
 async def test_a_refusal_reaches_the_agent_with_its_reason() -> None:

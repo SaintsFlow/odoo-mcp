@@ -5,7 +5,7 @@ from mcp.server.mcpserver import MCPServer
 from src.client import OdooClient
 from src.errors import OdooValidationError
 from src.models import StockLevel
-from src.tools import readable_errors
+from src.tools import LOOKS_ONLY, readable_errors
 
 MAX_LEVELS = 100
 
@@ -37,7 +37,7 @@ async def get_stock(client: OdooClient, product_query: str) -> list[StockLevel]:
 def register(server: MCPServer, client: OdooClient) -> None:
     """Publish the stock tool on the server."""
 
-    @server.tool(name="get_stock")
+    @server.tool(name="get_stock", annotations=LOOKS_ONLY)
     @readable_errors
     async def _get_stock(product_query: str) -> list[StockLevel]:
         """Look up how much of a product is in stock, per warehouse.
