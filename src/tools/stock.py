@@ -4,13 +4,13 @@ from mcp.server.mcpserver import MCPServer
 
 from src.client import OdooClient
 from src.errors import OdooValidationError
-from src.models import StockLevel
-from src.tools import LOOKS_ONLY, readable_errors
+from src.models import Listing, StockLevel
+from src.tools import LOOKS_ONLY, listing, readable_errors
 
 MAX_LEVELS = 100
 
 
-async def get_stock(client: OdooClient, product_query: str) -> list[StockLevel]:
+async def get_stock(client: OdooClient, product_query: str) -> Listing[StockLevel]:
     """Stock levels of the products matching a piece of text.
 
     Only real storage locations count. Odoo also keeps quantities in virtual
@@ -28,10 +28,14 @@ async def get_stock(client: OdooClient, product_query: str) -> list[StockLevel]:
         ("product_id.name", "ilike", wanted),
         ("product_id.default_code", "ilike", wanted),
     ]
-    records = await client.search_read(
+    found = await client.search_read(
         "stock.quant", domain, StockLevel.ODOO_FIELDS, limit=MAX_LEVELS
     )
-    return [StockLevel.from_odoo(record) for record in records]
+    return listing(
+        [StockLevel.from_odoo(record) for record in found.rows],
+        found.truncated,
+        "Name the product more exactly, or use its internal code.",
+    )
 
 
 def register(server: MCPServer, client: OdooClient) -> None:
@@ -39,7 +43,7 @@ def register(server: MCPServer, client: OdooClient) -> None:
 
     @server.tool(name="get_stock", annotations=LOOKS_ONLY)
     @readable_errors
-    async def _get_stock(product_query: str) -> list[StockLevel]:
+    async def _get_stock(product_query: str) -> Listing[StockLevel]:
         """Look up how much of a product is in stock, per warehouse.
 
         The text is matched against the product name and its internal code. Each

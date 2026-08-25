@@ -21,6 +21,16 @@ from src.tools import invoices, orders, partners, stock
 
 SERVER_NAME = "odoo-mcp"
 DEFAULT_LOG_LEVEL = "info"
+READONLY_ENV = "ODOO_READONLY"
+
+# What counts as "yes" in an environment variable. Anything else, including an
+# empty value, leaves writing on.
+TURNED_ON = frozenset({"1", "true", "yes", "on"})
+
+
+def read_only_from_env() -> bool:
+    """Whether this server may change anything in Odoo."""
+    return os.getenv(READONLY_ENV, "").strip().lower() in TURNED_ON
 
 
 def _package_version() -> str:
@@ -56,15 +66,19 @@ def configure_logging(level: str = DEFAULT_LOG_LEVEL) -> None:
     )
 
 
-def build_server(client: OdooClient) -> MCPServer:
+def build_server(client: OdooClient, read_only: bool = False) -> MCPServer:
     """Create the server and publish the tools on it.
 
     The client is passed in rather than built here, so a test can hand over one
-    that never reaches the network.
+    that never reaches the network. In read-only mode the write tools are never
+    registered: pointed at a real database, the server should not even offer to
+    change it.
     """
     server = MCPServer(SERVER_NAME, version=_package_version())
     for area in (partners, orders, stock, invoices):
         area.register(server, client)
+    if not read_only:
+        orders.register_writes(server, client)
     return server
 
 
@@ -72,8 +86,9 @@ def main() -> None:
     """Run the server over stdio until the client closes the connection."""
     configure_logging(os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL))
     log = structlog.get_logger()
-    server = build_server(OdooClient(OdooConfig.from_env()))
-    log.info("server_started", transport="stdio")
+    read_only = read_only_from_env()
+    server = build_server(OdooClient(OdooConfig.from_env()), read_only=read_only)
+    log.info("server_started", transport="stdio", read_only=read_only)
     server.run()
 
 

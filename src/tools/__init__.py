@@ -12,6 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from src.errors import OdooError
+from src.models import Listing
 
 # A client decides from these whether to ask the user before running a tool.
 # One with no annotations at all counts as a tool that may change anything, so
@@ -19,6 +20,16 @@ from src.errors import OdooError
 # the write tools would put all six in the same bucket.
 LOOKS_ONLY = ToolAnnotations(read_only_hint=True)
 CHANGES_DATA = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False)
+
+
+def listing[Item](items: list[Item], truncated: bool, narrow: str) -> Listing[Item]:
+    """Pack an answer, and when it was cut short say what to do about it.
+
+    The hint is written per tool: "narrow the search" means something different
+    to someone looking for a partner and to someone listing invoices.
+    """
+    hint = f"Only the first {len(items)} of more are shown. {narrow}" if truncated else None
+    return Listing(items=items, truncated=truncated, hint=hint)
 
 
 def readable_errors[**Arguments, Answer](

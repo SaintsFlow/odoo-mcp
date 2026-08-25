@@ -10,20 +10,20 @@ from tests.helpers import assert_reads_as_a_fact
 
 async def _partner_with_invoices(client: OdooClient) -> int:
     partners = await client.search_read("res.partner", [("name", "=", "Acme Corporation")], ["id"])
-    assert partners, "the demo data should carry Acme Corporation"
-    return int(partners[0]["id"])
+    assert partners.rows, "the demo data should carry Acme Corporation"
+    return int(partners.rows[0]["id"])
 
 
 async def _every_company(client: OdooClient) -> list[int]:
     """Companies are readable whatever the pin, only their records are not."""
-    rows = await client.search_read("res.company", [], ["name"])
-    return sorted(int(row["id"]) for row in rows)
+    companies = await client.search_read("res.company", [], ["name"])
+    return sorted(int(row["id"]) for row in companies.rows)
 
 
 async def test_the_invoices_of_a_partner_come_back(odoo_client: OdooClient) -> None:
     invoices = await list_invoices(odoo_client, await _partner_with_invoices(odoo_client))
-    assert invoices
-    first = invoices[0]
+    assert invoices.items
+    first = invoices.items[0]
     assert first.number
     assert first.total > 0
     assert first.currency
@@ -36,8 +36,8 @@ async def test_only_one_company_answers(odoo_client: OdooClient) -> None:
     number, different amounts and different currencies.
     """
     invoices = await list_invoices(odoo_client, await _partner_with_invoices(odoo_client))
-    assert len({invoice.currency for invoice in invoices}) == 1
-    assert len({invoice.number for invoice in invoices}) == len(invoices)
+    assert len({invoice.currency for invoice in invoices.items}) == 1
+    assert len({invoice.number for invoice in invoices.items}) == len(invoices.items)
 
 
 async def test_several_companies_can_answer_at_once(
@@ -54,16 +54,18 @@ async def test_several_companies_can_answer_at_once(
     )
     invoices = await list_invoices(everywhere, await _partner_with_invoices(odoo_client))
 
-    assert len({invoice.currency for invoice in invoices}) > 1
-    assert all(invoice.company for invoice in invoices)
-    assert len({(invoice.number, invoice.company) for invoice in invoices}) == len(invoices)
+    assert len({invoice.currency for invoice in invoices.items}) > 1
+    assert all(invoice.company for invoice in invoices.items)
+    assert len({(invoice.number, invoice.company) for invoice in invoices.items}) == len(
+        invoices.items
+    )
 
 
 async def test_the_state_filter_works(odoo_client: OdooClient) -> None:
     partner_id = await _partner_with_invoices(odoo_client)
     posted = await list_invoices(odoo_client, partner_id, state="posted")
-    assert posted
-    assert all(invoice.state == "posted" for invoice in posted)
+    assert posted.items
+    assert all(invoice.state == "posted" for invoice in posted.items)
 
 
 async def test_an_unknown_state_is_refused_before_odoo_is_called(
@@ -75,10 +77,12 @@ async def test_an_unknown_state_is_refused_before_odoo_is_called(
     assert "posted" in caught.value.message
 
 
-async def test_a_partner_without_invoices_gives_an_empty_list(odoo_client: OdooClient) -> None:
-    assert await list_invoices(odoo_client, 999999) == []
+async def test_a_partner_without_invoices_gives_an_empty_answer(odoo_client: OdooClient) -> None:
+    empty = await list_invoices(odoo_client, 999999)
+    assert empty.items == []
+    assert empty.truncated is False
 
 
 async def test_the_answer_carries_no_odoo_internals(odoo_client: OdooClient) -> None:
     invoices = await list_invoices(odoo_client, await _partner_with_invoices(odoo_client))
-    assert_reads_as_a_fact([invoice.model_dump() for invoice in invoices])
+    assert_reads_as_a_fact(invoices.model_dump())
