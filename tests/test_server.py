@@ -7,13 +7,13 @@ from mcp.types import ToolAnnotations
 from pydantic import SecretStr
 
 from src.client import OdooClient, OdooConfig
-from src.server import SERVER_NAME, build_server, configure_logging
+from src.server import SERVER_NAME, build_server, configure_logging, read_only_from_env
 
 READ_TOOLS = {"search_partners", "get_sales_order", "get_stock", "list_invoices"}
 WRITE_TOOLS = {"create_sales_order", "confirm_sales_order"}
 
 
-def _offline_server() -> MCPServer:
+def _offline_server(read_only: bool = False) -> MCPServer:
     """A server built against a client that is never called.
 
     Listing tools touches no network, so these tests need no Odoo.
@@ -21,7 +21,37 @@ def _offline_server() -> MCPServer:
     config = OdooConfig(
         url="http://odoo.invalid", db="odoo", user="admin", password=SecretStr("unused")
     )
-    return build_server(OdooClient(config))
+    return build_server(OdooClient(config), read_only=read_only)
+
+
+async def test_read_only_leaves_the_write_tools_unpublished() -> None:
+    """Pointed at a real database, the server should not even offer to write."""
+    tools = await _offline_server(read_only=True).list_tools()
+    assert {tool.name for tool in tools} == READ_TOOLS
+
+
+async def test_a_write_tool_is_not_callable_in_read_only_mode() -> None:
+    """Unpublished means gone, not "refuses politely when called"."""
+    with pytest.raises(ToolError) as caught:
+        await _offline_server(read_only=True).call_tool(
+            "create_sales_order",
+            {"partner_id": 1, "lines": [{"product_id": 1, "quantity": 1}]},
+        )
+    assert "create_sales_order" in str(caught.value)
+
+
+def test_read_only_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whoever runs this against production sets one variable and is done."""
+    monkeypatch.delenv("ODOO_READONLY", raising=False)
+    assert read_only_from_env() is False
+
+    for yes in ("true", "TRUE", "1", "yes", "on"):
+        monkeypatch.setenv("ODOO_READONLY", yes)
+        assert read_only_from_env() is True, f"{yes!r} should turn read-only on"
+
+    for no in ("false", "0", "no", "", "off"):
+        monkeypatch.setenv("ODOO_READONLY", no)
+        assert read_only_from_env() is False, f"{no!r} should leave writing on"
 
 
 async def test_the_read_and_write_tools_are_published() -> None:

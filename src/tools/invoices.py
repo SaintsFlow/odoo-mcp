@@ -4,15 +4,15 @@ from mcp.server.mcpserver import MCPServer
 
 from src.client import OdooClient
 from src.errors import OdooValidationError
-from src.models import INVOICE_STATES_TO_ODOO, Invoice
-from src.tools import LOOKS_ONLY, readable_errors
+from src.models import INVOICE_STATES_TO_ODOO, Invoice, Listing
+from src.tools import LOOKS_ONLY, listing, readable_errors
 
 MAX_INVOICES = 100
 
 
 async def list_invoices(
     client: OdooClient, partner_id: int, state: str | None = None
-) -> list[Invoice]:
+) -> Listing[Invoice]:
     """Invoices we sent to a partner, newest first.
 
     Vendor bills live in the same Odoo model and are deliberately left out: the
@@ -29,10 +29,14 @@ async def list_invoices(
             raise OdooValidationError(f"Unknown state '{state}'. Use one of: {known}.")
         domain.append(("state", "=", allowed))
 
-    records = await client.search_read(
+    found = await client.search_read(
         "account.move", domain, Invoice.ODOO_FIELDS, limit=MAX_INVOICES
     )
-    return [Invoice.from_odoo(record) for record in records]
+    return listing(
+        [Invoice.from_odoo(record) for record in found.rows],
+        found.truncated,
+        "Ask for one state at a time, such as posted.",
+    )
 
 
 def register(server: MCPServer, client: OdooClient) -> None:
@@ -40,7 +44,7 @@ def register(server: MCPServer, client: OdooClient) -> None:
 
     @server.tool(name="list_invoices", annotations=LOOKS_ONLY)
     @readable_errors
-    async def _list_invoices(partner_id: int, state: str | None = None) -> list[Invoice]:
+    async def _list_invoices(partner_id: int, state: str | None = None) -> Listing[Invoice]:
         """List the invoices sent to one customer.
 
         The partner id is the one search results carry. The state is optional and

@@ -22,10 +22,10 @@ async def get_sales_order(client: OdooClient, order_id: int) -> SalesOrder:
     Odoo answers a query for a record that is not there with an empty list and
     no error at all, so the missing case is spotted and named here.
     """
-    records = await client.search_read(
+    found = await client.search_read(
         "sale.order", [("id", "=", order_id)], SalesOrder.ODOO_FIELDS, limit=1
     )
-    if not records:
+    if not found.rows:
         raise OdooValidationError(f"There is no sales order with id {order_id}.")
 
     # An order can also hold section headers and notes. They carry no product
@@ -35,7 +35,11 @@ async def get_sales_order(client: OdooClient, order_id: int) -> SalesOrder:
         [("order_id", "=", order_id), ("display_type", "=", False)],
         OrderLine.ODOO_FIELDS,
     )
-    return SalesOrder.from_odoo(records[0], [OrderLine.from_odoo(line) for line in lines])
+    return SalesOrder.from_odoo(
+        found.rows[0],
+        [OrderLine.from_odoo(line) for line in lines.rows],
+        lines_truncated=lines.truncated,
+    )
 
 
 async def create_sales_order(
@@ -121,8 +125,8 @@ def _lines_have_to_make_sense(lines: list[OrderLineInput]) -> None:
 
 async def _partner_has_to_exist(client: OdooClient, partner_id: int) -> None:
     """Refuse an unknown customer in words the agent can act on."""
-    records = await client.search_read("res.partner", [("id", "=", partner_id)], ["name"], limit=1)
-    if not records:
+    found = await client.search_read("res.partner", [("id", "=", partner_id)], ["name"], limit=1)
+    if not found.rows:
         raise OdooValidationError(
             f"There is no partner with id {partner_id}. search_partners finds the right one."
         )
@@ -131,8 +135,8 @@ async def _partner_has_to_exist(client: OdooClient, partner_id: int) -> None:
 async def _products_have_to_exist(client: OdooClient, lines: list[OrderLineInput]) -> None:
     """Same for the goods, and all of them are named at once rather than one per try."""
     wanted = {line.product_id for line in lines}
-    records = await client.search_read("product.product", [("id", "in", sorted(wanted))], ["name"])
-    missing = sorted(wanted - {int(record["id"]) for record in records})
+    found = await client.search_read("product.product", [("id", "in", sorted(wanted))], ["name"])
+    missing = sorted(wanted - {int(record["id"]) for record in found.rows})
     if missing:
         listed = ", ".join(str(one) for one in missing)
         subject = "product" if len(missing) == 1 else "products"
@@ -143,7 +147,7 @@ async def _products_have_to_exist(client: OdooClient, lines: list[OrderLineInput
 
 
 def register(server: MCPServer, client: OdooClient) -> None:
-    """Publish the sales order tools on the server."""
+    """Publish the tool that only reads orders."""
 
     @server.tool(name="get_sales_order", annotations=LOOKS_ONLY)
     @readable_errors
@@ -154,6 +158,15 @@ def register(server: MCPServer, client: OdooClient) -> None:
         Fails with a clear message when no such order exists.
         """
         return await get_sales_order(client, order_id)
+
+
+def register_writes(server: MCPServer, client: OdooClient) -> None:
+    """Publish the tools that change Odoo.
+
+    Kept apart from register so that read-only mode can simply not call it. An
+    unpublished tool cannot be reached at all, which is a stronger promise than
+    a tool that refuses politely.
+    """
 
     @server.tool(name="create_sales_order", annotations=CHANGES_DATA)
     @readable_errors

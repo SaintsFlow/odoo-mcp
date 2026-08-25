@@ -104,6 +104,19 @@ def test_order_state_stops_being_odoo_jargon() -> None:
     assert order.currency == "USD"
 
 
+def test_an_order_says_when_its_lines_were_cut_short() -> None:
+    """A big order hitting the cap must not read as a small order.
+
+    Lines are capped like every other selection, and an order that quietly
+    dropped half of them would answer the wrong sum to "what did they buy".
+    """
+    whole = SalesOrder.from_odoo(ORDER_RECORD, lines=[])
+    assert whole.lines_truncated is False
+
+    cut = SalesOrder.from_odoo(ORDER_RECORD, lines=[], lines_truncated=True)
+    assert cut.lines_truncated is True
+
+
 def test_every_order_state_has_a_word() -> None:
     """A state we forgot to translate would reach the agent as noise."""
     said = {

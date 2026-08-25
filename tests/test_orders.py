@@ -19,22 +19,22 @@ async def _a_demo_order_id(client: OdooClient) -> int:
     second ago, quantities and all. The read tests are about the demo data.
     """
     orders = await client.search_read("sale.order", [], ["id"])
-    assert orders, "the demo data should carry sales orders"
-    return min(int(order["id"]) for order in orders)
+    assert orders.rows, "the demo data should carry sales orders"
+    return min(int(order["id"]) for order in orders.rows)
 
 
 async def _a_customer_id(client: OdooClient) -> int:
     partners = await client.search_read("res.partner", [("customer_rank", ">", 0)], ["id"], limit=1)
-    assert partners, "the demo data should carry customers"
-    return int(partners[0]["id"])
+    assert partners.rows, "the demo data should carry customers"
+    return int(partners.rows[0]["id"])
 
 
 async def _a_product_id(client: OdooClient) -> int:
     products = await client.search_read(
         "product.product", [("sale_ok", "=", True)], ["id"], limit=1
     )
-    assert products, "the demo data should carry sellable products"
-    return int(products[0]["id"])
+    assert products.rows, "the demo data should carry sellable products"
+    return int(products.rows[0]["id"])
 
 
 async def _how_many_orders(client: OdooClient) -> int:

@@ -4,13 +4,13 @@ from mcp.server.mcpserver import MCPServer
 
 from src.client import OdooClient
 from src.errors import OdooValidationError
-from src.models import Partner
-from src.tools import LOOKS_ONLY, readable_errors
+from src.models import Listing, Partner
+from src.tools import LOOKS_ONLY, listing, readable_errors
 
 MAX_LIMIT = 100
 
 
-async def search_partners(client: OdooClient, query: str, limit: int = 20) -> list[Partner]:
+async def search_partners(client: OdooClient, query: str, limit: int = 20) -> Listing[Partner]:
     """Search partners over several fields at once.
 
     Someone asking for "Azure" does not know whether the word sits in the name,
@@ -33,10 +33,14 @@ async def search_partners(client: OdooClient, query: str, limit: int = 20) -> li
         ("city", "ilike", wanted),
         ("vat", "ilike", wanted),
     ]
-    records = await client.search_read(
+    found = await client.search_read(
         "res.partner", domain, Partner.ODOO_FIELDS, limit=min(limit, MAX_LIMIT)
     )
-    return [Partner.from_odoo(record) for record in records]
+    return listing(
+        [Partner.from_odoo(record) for record in found.rows],
+        found.truncated,
+        "Search for something more specific, such as a full name, a city or a VAT number.",
+    )
 
 
 def register(server: MCPServer, client: OdooClient) -> None:
@@ -44,11 +48,12 @@ def register(server: MCPServer, client: OdooClient) -> None:
 
     @server.tool(name="search_partners", annotations=LOOKS_ONLY)
     @readable_errors
-    async def _search_partners(query: str, limit: int = 20) -> list[Partner]:
+    async def _search_partners(query: str, limit: int = 20) -> Listing[Partner]:
         """Find customers and suppliers.
 
         The search text is matched against the name, the email address, the city
         and the VAT number, so a fragment of any one of them is enough. Answers
-        with an empty list when nobody matches.
+        with an empty list when nobody matches, and says so when more matched
+        than fit into one answer.
         """
         return await search_partners(client, query, limit)

@@ -9,7 +9,9 @@ about calls that either return records or raise one of the errors in errors.py.
 """
 
 import asyncio
+import http.client
 import os
+import ssl
 import time
 import xmlrpc.client
 from typing import Any
@@ -23,6 +25,16 @@ from src.models import link_id
 COMMON_ENDPOINT = "/xmlrpc/2/common"
 OBJECT_ENDPOINT = "/xmlrpc/2/object"
 
+# The most records one call will ever hand back. A tool that drags a whole table
+# into an answer is no use to anyone, and Odoo is happy to do it.
+MAX_RECORDS = 200
+
+# How long to wait for Odoo before giving up. A stuck call with no deadline of
+# our own waits as long as the operating system allows, and the agent hears
+# nothing at all in the meantime.
+DEFAULT_TIMEOUT_SECONDS = 30.0
+TIMEOUT_ENV = "ODOO_TIMEOUT"
+
 # Odoo translates the messages it raises, and our tools pass them straight to
 # the agent. Pinning the language keeps them English, which is the language of
 # this project, and keeps the parsing in errors.py predictable.
@@ -30,6 +42,82 @@ DEFAULT_CONTEXT: dict[str, Any] = {"lang": "en_US"}
 
 REQUIRED_ENV = ("ODOO_URL", "ODOO_DB", "ODOO_USER", "ODOO_PASSWORD")
 COMPANIES_ENV = "ODOO_COMPANY_IDS"
+
+
+def page_size(limit: int | None) -> int:
+    """How many records to ask Odoo for: one more than we intend to keep.
+
+    That extra row is the whole trick behind "there is more where this came
+    from". If it comes back, the answer was cut short and the caller is told so.
+    """
+    keeping = MAX_RECORDS if limit is None else min(limit, MAX_RECORDS)
+    return keeping + 1
+
+
+class Records(BaseModel):
+    """Rows out of Odoo, and whether the cap cut them short."""
+
+    rows: list[dict[str, Any]]
+    truncated: bool = False
+
+
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """Plain HTTP with a deadline on the connection.
+
+    ServerProxy takes no timeout of its own and the stock transport builds a
+    connection without one, so the only place to put it is here.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host: Any) -> http.client.HTTPConnection:
+        cached = self._connection
+        if cached and cached[0] == host and cached[1] is not None:
+            return cached[1]
+        chost, self._extra_headers, _ = self.get_host_info(host)
+        connection = http.client.HTTPConnection(chost, timeout=self._timeout)
+        self._connection = (host, connection)
+        return connection
+
+
+class _SafeTimeoutTransport(xmlrpc.client.SafeTransport):
+    """The same for https, where another class builds the connection.
+
+    A client certificate travels in the SSL context and nowhere else: 3.12
+    dropped key_file and cert_file from HTTPSConnection entirely.
+    """
+
+    def __init__(self, timeout: float, ssl_context: ssl.SSLContext | None = None) -> None:
+        super().__init__()
+        self._timeout = timeout
+        self._ssl_context = ssl_context
+
+    def make_connection(self, host: Any) -> http.client.HTTPSConnection:
+        cached = self._connection
+        if cached and cached[0] == host and isinstance(cached[1], http.client.HTTPSConnection):
+            return cached[1]
+        chost, self._extra_headers, _ = self.get_host_info(host)
+        connection = http.client.HTTPSConnection(
+            chost, None, timeout=self._timeout, context=self._ssl_context
+        )
+        self._connection = (host, connection)
+        return connection
+
+
+def _timeout_from_env() -> float:
+    """How long a call may take, in seconds."""
+    raw = os.getenv(TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise OdooError(f"{TIMEOUT_ENV} has to be a number of seconds. It is {raw!r}.") from None
+    if seconds <= 0:
+        raise OdooError(f"{TIMEOUT_ENV} has to be above zero. It is {raw!r}.")
+    return seconds
 
 
 def _companies_from_env() -> list[int] | None:
@@ -58,6 +146,8 @@ class OdooConfig(BaseModel):
     # Which companies the answers come from. Left empty it is the one the user
     # belongs to. Several are allowed, and then every answer names its own.
     company_ids: list[int] | None = None
+    # Seconds one call may take before it is given up on.
+    timeout: float = DEFAULT_TIMEOUT_SECONDS
 
     @classmethod
     def from_env(cls) -> "OdooConfig":
@@ -72,6 +162,7 @@ class OdooConfig(BaseModel):
             user=os.environ["ODOO_USER"],
             password=SecretStr(os.environ["ODOO_PASSWORD"]),
             company_ids=_companies_from_env(),
+            timeout=_timeout_from_env(),
         )
 
     def endpoint(self, path: str) -> str:
@@ -160,6 +251,11 @@ class OdooClient:
                 message=error.message,
             )
             raise error from fault
+        except TimeoutError as exc:
+            # A TimeoutError is an OSError too, so it has to be caught first or
+            # the branch below would swallow it and say "timed out" to the agent.
+            log.warning("odoo_call_timed_out", duration_ms=_elapsed_ms(started))
+            raise self._took_too_long() from exc
         except (xmlrpc.client.Error, OSError) as exc:
             log.warning(
                 "odoo_call_failed", duration_ms=_elapsed_ms(started), error=type(exc).__name__
@@ -178,16 +274,29 @@ class OdooClient:
         fields: list[str],
         limit: int | None = None,
         offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        """Search and read in one round trip. The workhorse of every read tool."""
-        kwargs: dict[str, Any] = {"fields": list(fields), "offset": offset}
-        if limit is not None:
-            kwargs["limit"] = limit
+    ) -> Records:
+        """Search and read in one round trip. The workhorse of every read tool.
+
+        Never hands back more than the cap, whatever it was asked for, and says
+        when it had to cut. A caller with no limit of its own gets the cap.
+        """
+        keeping = MAX_RECORDS if limit is None else min(limit, MAX_RECORDS)
+        kwargs: dict[str, Any] = {
+            "fields": list(fields),
+            "offset": offset,
+            "limit": page_size(limit),
+        }
 
         result = await self.execute_kw(model, "search_read", [list(domain)], kwargs)
         if not isinstance(result, list) or not all(isinstance(row, dict) for row in result):
             raise OdooApiError(f"Odoo answered {model}.search_read with something unexpected.")
-        return result
+
+        truncated = len(result) > keeping
+        if truncated:
+            # Worth a line: an agent hitting the cap over and over is an agent
+            # asking the wrong question, and nobody would see it otherwise.
+            structlog.get_logger().info("records_capped", model=model, kept=keeping)
+        return Records(rows=result[:keeping], truncated=truncated)
 
     def _authenticate_blocking(self) -> int:
         """The login itself. Runs in a worker thread."""
@@ -207,6 +316,8 @@ class OdooClient:
                 fault_string=str(fault.faultString),
             )
             raise OdooAuthError(f"Odoo refused the login: {fault_message(fault)}") from fault
+        except TimeoutError as exc:
+            raise self._took_too_long() from exc
         except (xmlrpc.client.Error, OSError) as exc:
             raise OdooApiError(f"Odoo at {self._config.url} did not answer: {exc}") from exc
 
@@ -237,6 +348,8 @@ class OdooClient:
             )
         except xmlrpc.client.Fault as fault:
             raise translate_fault(fault) from fault
+        except TimeoutError as exc:
+            raise self._took_too_long() from exc
         except (xmlrpc.client.Error, OSError) as exc:
             raise OdooApiError(f"Odoo at {self._config.url} did not answer: {exc}") from exc
 
@@ -270,14 +383,27 @@ class OdooClient:
             kwargs,
         )
 
+    def _took_too_long(self) -> OdooApiError:
+        """The refusal an agent gets when Odoo went quiet."""
+        return OdooApiError(
+            f"Odoo did not answer within {self._config.timeout:g} seconds. Ask for less at "
+            f"a time, or give it longer with {TIMEOUT_ENV}."
+        )
+
     def _proxy(self, path: str) -> xmlrpc.client.ServerProxy:
-        """A fresh proxy for every call.
+        """A fresh proxy for every call, with our deadline on it.
 
         ServerProxy keeps an HTTP connection inside and is not thread safe,
         while asyncio.to_thread spreads calls over a pool. Sharing one would
         buy a race on that connection; a new one costs a local TCP handshake.
         """
-        return xmlrpc.client.ServerProxy(self._config.endpoint(path), allow_none=True)
+        url = self._config.endpoint(path)
+        transport: xmlrpc.client.Transport = (
+            _SafeTimeoutTransport(self._config.timeout)
+            if url.lower().startswith("https:")
+            else _TimeoutTransport(self._config.timeout)
+        )
+        return xmlrpc.client.ServerProxy(url, transport=transport, allow_none=True)
 
 
 def _elapsed_ms(started: float) -> float:

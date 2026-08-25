@@ -38,6 +38,23 @@ PAYMENT_STATES = {
 }
 
 
+class Listing[Item](BaseModel):
+    """Answers to a search, and whether they are all of them.
+
+    A tool that hands back twenty of thirty-eight matches without a word is
+    lying by omission: the agent counts what it got and reports that as the
+    whole picture.
+    """
+
+    items: list[Item]
+    truncated: bool = Field(
+        default=False, description="More records matched than fit into one answer"
+    )
+    hint: str | None = Field(
+        default=None, description="How to narrow the request, when the answer was cut"
+    )
+
+
 def link_id(value: Any) -> int | None:
     """The number out of an Odoo link, or nothing if the link is empty."""
     if isinstance(value, list) and value:
@@ -159,6 +176,9 @@ class SalesOrder(BaseModel):
     currency: str
     company: str | None = Field(default=None, description="Company the order belongs to")
     lines: list[OrderLine]
+    lines_truncated: bool = Field(
+        default=False, description="The order has more lines than are shown here"
+    )
 
     ODOO_FIELDS: ClassVar[list[str]] = [
         "name",
@@ -172,7 +192,12 @@ class SalesOrder(BaseModel):
     ]
 
     @classmethod
-    def from_odoo(cls, record: dict[str, Any], lines: list[OrderLine]) -> "SalesOrder":
+    def from_odoo(
+        cls,
+        record: dict[str, Any],
+        lines: list[OrderLine],
+        lines_truncated: bool = False,
+    ) -> "SalesOrder":
         raw_state = str(record.get("state") or "")
         return cls(
             id=int(record["id"]),
@@ -186,6 +211,7 @@ class SalesOrder(BaseModel):
             currency=link_name(record.get("currency_id")) or "",
             company=link_name(record.get("company_id")),
             lines=lines,
+            lines_truncated=lines_truncated,
         )
 
 

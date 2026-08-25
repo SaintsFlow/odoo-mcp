@@ -3,8 +3,9 @@
 An MCP server for Odoo. It gives an LLM agent read and write access to partners, sales
 orders, stock levels and invoices in an Odoo instance.
 
-**Status:** early. All six tools below work against the Odoo in `docker compose`, and the
-limits that make a server safe to point at a real database are still being built.
+**Status:** early. All six tools below work against the Odoo in `docker compose`, answers
+are capped, every call has a deadline, and `ODOO_READONLY=true` leaves the write tools
+unpublished. What is missing is listed at the bottom.
 
 ## Why
 
@@ -58,17 +59,27 @@ user before an order is created or confirmed.
 quantity without a word, and answers an unknown id with its own record ids in the text.
 Both are caught here, so a refusal says what to do instead of what broke inside the ERP.
 
+**A cut answer says it was cut.** No call hands back more than 200 records. When more
+matched, the answer carries `truncated: true` and a hint on how to narrow the request,
+because twenty results out of thirty-eight look exactly like all of them otherwise.
+
+**Read-only mode removes the write tools rather than blocking them.** With
+`ODOO_READONLY=true` they are never published, so a client sees four tools and a call by
+name comes back as an unknown tool.
+
 **Errors are translated.** Odoo raises faults with long tracebacks. The server extracts
 the message and returns it in a form the agent can act on.
 
 ## What is not here yet
 
-- pagination and result limits
-- a read-only mode that leaves the write tools unpublished
+- paging through a cut answer: a tool says there is more, but there is no way to ask for
+  the next page yet, only a narrower question
 - multi-company support: a company is pinned with `ODOO_COMPANY_IDS` and every answer
   names its own, which is not the same as running across several of them
 - cancelling an order, and editing one that already exists
 - a seeded data set, so a demo run shows the same numbers every time
+- the streamable http transport, so the server can run somewhere other than beside its
+  client
 
 ## License
 

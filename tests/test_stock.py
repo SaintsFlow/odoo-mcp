@@ -10,8 +10,8 @@ from tests.helpers import assert_reads_as_a_fact
 
 async def test_stock_is_found_by_product_name(odoo_client: OdooClient) -> None:
     levels = await get_stock(odoo_client, "desk")
-    assert levels
-    assert all("desk" in level.product.lower() for level in levels)
+    assert levels.items
+    assert all("desk" in level.product.lower() for level in levels.items)
 
 
 async def test_a_level_carries_the_id_needed_to_order_the_product(
@@ -23,26 +23,28 @@ async def test_a_level_carries_the_id_needed_to_order_the_product(
     would not even pick one of them.
     """
     levels = await get_stock(odoo_client, "desk")
-    assert levels
-    assert all(level.product_id > 0 for level in levels)
+    assert levels.items
+    assert all(level.product_id > 0 for level in levels.items)
 
 
 async def test_a_level_names_its_warehouse(odoo_client: OdooClient) -> None:
     """A quantity without a place is not an answer in a company with two sites."""
     levels = await get_stock(odoo_client, "desk")
-    assert any(level.warehouse for level in levels)
+    assert any(level.warehouse for level in levels.items)
 
 
 async def test_reserved_goods_are_not_counted_as_available(odoo_client: OdooClient) -> None:
     """On hand minus reserved is the number a salesperson can promise."""
     levels = await get_stock(odoo_client, "cabinet")
-    assert levels
-    for level in levels:
+    assert levels.items
+    for level in levels.items:
         assert level.available == pytest.approx(level.on_hand - level.reserved)
 
 
-async def test_an_unknown_product_gives_an_empty_list(odoo_client: OdooClient) -> None:
-    assert await get_stock(odoo_client, "no such product anywhere") == []
+async def test_an_unknown_product_gives_an_empty_answer(odoo_client: OdooClient) -> None:
+    levels = await get_stock(odoo_client, "no such product anywhere")
+    assert levels.items == []
+    assert levels.truncated is False
 
 
 async def test_an_empty_query_is_refused(odoo_client: OdooClient) -> None:
@@ -53,4 +55,4 @@ async def test_an_empty_query_is_refused(odoo_client: OdooClient) -> None:
 
 async def test_the_answer_carries_no_odoo_internals(odoo_client: OdooClient) -> None:
     levels = await get_stock(odoo_client, "desk")
-    assert_reads_as_a_fact([level.model_dump() for level in levels])
+    assert_reads_as_a_fact(levels.model_dump())
