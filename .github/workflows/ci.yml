@@ -11,6 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The client tests call a real Odoo, so CI runs the same stand a developer
+      # runs. Started first and waited for later: the first boot builds the
+      # database, and it can do that while the linters work.
+      - name: Start Odoo
+        run: docker compose up -d db odoo
+
       # Same uv version as the Dockerfile, so a green CI means the image builds too.
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -33,5 +39,17 @@ jobs:
       - name: Types
         run: uv run mypy --strict src
 
+      # Holds until the healthcheck passes, so the database is really built.
+      - name: Wait for Odoo
+        run: make up
+
       - name: Tests
+        env:
+          # Without it a missing Odoo would skip the client tests and CI would
+          # stay green while covering nothing.
+          ODOO_REQUIRED: "1"
         run: uv run pytest -q
+
+      - name: Odoo logs on failure
+        if: failure()
+        run: docker compose logs --tail=100 odoo
