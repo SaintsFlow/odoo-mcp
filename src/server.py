@@ -16,6 +16,9 @@ import structlog
 # the mcp.server.fastmcp module are gone, so 1.x snippets do not apply here.
 from mcp.server.mcpserver import MCPServer
 
+from src.client import OdooClient, OdooConfig
+from src.tools import invoices, orders, partners, stock
+
 SERVER_NAME = "odoo-mcp"
 DEFAULT_LOG_LEVEL = "info"
 
@@ -53,17 +56,24 @@ def configure_logging(level: str = DEFAULT_LOG_LEVEL) -> None:
     )
 
 
-def build_server() -> MCPServer:
-    """Create the server. Tools get registered here from wave 2 on."""
-    return MCPServer(SERVER_NAME, version=_package_version())
+def build_server(client: OdooClient) -> MCPServer:
+    """Create the server and publish the tools on it.
+
+    The client is passed in rather than built here, so a test can hand over one
+    that never reaches the network.
+    """
+    server = MCPServer(SERVER_NAME, version=_package_version())
+    for area in (partners, orders, stock, invoices):
+        area.register(server, client)
+    return server
 
 
 def main() -> None:
     """Run the server over stdio until the client closes the connection."""
     configure_logging(os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL))
     log = structlog.get_logger()
-    server = build_server()
-    log.info("server_started", transport="stdio", tools=0)
+    server = build_server(OdooClient(OdooConfig.from_env()))
+    log.info("server_started", transport="stdio")
     server.run()
 
 

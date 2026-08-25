@@ -18,6 +18,7 @@ import structlog
 from pydantic import BaseModel, SecretStr
 
 from src.errors import OdooApiError, OdooAuthError, OdooError, fault_message, translate_fault
+from src.models import link_id
 
 COMMON_ENDPOINT = "/xmlrpc/2/common"
 OBJECT_ENDPOINT = "/xmlrpc/2/object"
@@ -28,6 +29,22 @@ OBJECT_ENDPOINT = "/xmlrpc/2/object"
 DEFAULT_CONTEXT: dict[str, Any] = {"lang": "en_US"}
 
 REQUIRED_ENV = ("ODOO_URL", "ODOO_DB", "ODOO_USER", "ODOO_PASSWORD")
+COMPANIES_ENV = "ODOO_COMPANY_IDS"
+
+
+def _companies_from_env() -> list[int] | None:
+    """Which companies the answers may come from, empty meaning the user's own."""
+    raw = os.getenv(COMPANIES_ENV, "").strip()
+    if not raw:
+        return None
+
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if not parts or not all(part.isdigit() for part in parts):
+        raise OdooError(
+            f"{COMPANIES_ENV} has to be one company id or several separated by commas, "
+            f"like 1 or 1,3. It is {raw!r}."
+        )
+    return [int(part) for part in parts]
 
 
 class OdooConfig(BaseModel):
@@ -38,6 +55,9 @@ class OdooConfig(BaseModel):
     user: str
     # SecretStr so that a stray repr of the config cannot print the password.
     password: SecretStr
+    # Which companies the answers come from. Left empty it is the one the user
+    # belongs to. Several are allowed, and then every answer names its own.
+    company_ids: list[int] | None = None
 
     @classmethod
     def from_env(cls) -> "OdooConfig":
@@ -45,11 +65,13 @@ class OdooConfig(BaseModel):
         missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
         if missing:
             raise OdooError(f"Odoo is not configured: set {', '.join(missing)}. See .env.example.")
+
         return cls(
             url=os.environ["ODOO_URL"],
             db=os.environ["ODOO_DB"],
             user=os.environ["ODOO_USER"],
             password=SecretStr(os.environ["ODOO_PASSWORD"]),
+            company_ids=_companies_from_env(),
         )
 
     def endpoint(self, path: str) -> str:
@@ -66,27 +88,39 @@ class OdooClient:
 
     def __init__(self, config: OdooConfig) -> None:
         self._config = config
-        self._uid: int | None = None
+        self._session: tuple[int, list[int]] | None = None
         # Without the lock a burst of first calls would all log in at once.
         self._login_lock = asyncio.Lock()
 
     async def authenticate(self) -> int:
         """Return the uid, logging in on the first call only."""
-        cached = self._uid
+        uid, _ = await self._open_session()
+        return uid
+
+    async def _open_session(self) -> tuple[int, list[int]]:
+        """The uid and the companies every call is pinned to, resolved once."""
+        cached = self._session
         if cached is not None:
             return cached
 
         async with self._login_lock:
             # Someone may have logged in while this call waited for the lock.
-            cached = self._uid
+            cached = self._session
             if cached is not None:
                 return cached
             uid = await asyncio.to_thread(self._authenticate_blocking)
-            self._uid = uid
+            companies = self._config.company_ids
+            if companies is None:
+                companies = [await asyncio.to_thread(self._company_blocking, uid)]
+            self._session = (uid, companies)
             structlog.get_logger().info(
-                "odoo_authenticated", db=self._config.db, user=self._config.user, uid=uid
+                "odoo_authenticated",
+                db=self._config.db,
+                user=self._config.user,
+                uid=uid,
+                company_ids=companies,
             )
-            return uid
+            return self._session
 
     async def execute_kw(
         self,
@@ -96,10 +130,14 @@ class OdooClient:
         kwargs: dict[str, Any] | None = None,
     ) -> Any:
         """Call any method on any model. The generic door into Odoo."""
-        uid = await self.authenticate()
+        uid, companies = await self._open_session()
         call_kwargs = dict(kwargs or {})
         # The caller's own context wins, it usually knows better than we do.
-        call_kwargs["context"] = {**DEFAULT_CONTEXT, **(call_kwargs.get("context") or {})}
+        call_kwargs["context"] = {
+            **DEFAULT_CONTEXT,
+            "allowed_company_ids": list(companies),
+            **(call_kwargs.get("context") or {}),
+        }
 
         log = structlog.get_logger().bind(model=model, method=method)
         started = time.perf_counter()
@@ -179,6 +217,38 @@ class OdooClient:
                 f"on database '{self._config.db}'."
             )
         return uid
+
+    def _company_blocking(self, uid: int) -> int:
+        """Which company the user belongs to. Runs in a worker thread.
+
+        This one goes straight to the proxy instead of through execute_kw,
+        because execute_kw needs the answer to build its own context.
+        """
+        proxy = self._proxy(OBJECT_ENDPOINT)
+        try:
+            rows = proxy.execute_kw(
+                self._config.db,
+                uid,
+                self._config.password.get_secret_value(),
+                "res.users",
+                "read",
+                [[uid]],
+                {"fields": ["company_id"], "context": DEFAULT_CONTEXT},
+            )
+        except xmlrpc.client.Fault as fault:
+            raise translate_fault(fault) from fault
+        except (xmlrpc.client.Error, OSError) as exc:
+            raise OdooApiError(f"Odoo at {self._config.url} did not answer: {exc}") from exc
+
+        company = None
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            company = link_id(rows[0].get("company_id"))
+        if company is None:
+            raise OdooApiError(
+                f"Odoo did not say which company user '{self._config.user}' belongs to. "
+                f"Set {COMPANIES_ENV} to pick one."
+            )
+        return company
 
     def _execute_kw_blocking(
         self,
