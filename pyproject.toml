@@ -19,6 +19,8 @@ odoo-mcp = "src.server:main"
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    # Coverage is a gate, not a report: the threshold lives in make check.
+    "pytest-cov>=6.0",
     "ruff>=0.7",
     "mypy>=1.13",
 ]
@@ -48,3 +50,12 @@ warn_unreachable = true
 testpaths = ["tests"]
 # Async tests need no decorator, every coroutine test just runs.
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+# The threshold lives here and nowhere else, so make check and CI cannot drift
+# apart on what counts as enough.
+fail_under = 70

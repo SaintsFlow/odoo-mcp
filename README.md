@@ -3,9 +3,9 @@
 An MCP server for Odoo. It gives an LLM agent read and write access to partners, sales
 orders, stock levels and invoices in an Odoo instance.
 
-**Status:** early. All six tools below work against the Odoo in `docker compose`, answers
-are capped, every call has a deadline, and `ODOO_READONLY=true` leaves the write tools
-unpublished. What is missing is listed at the bottom.
+All six tools work against the Odoo in `docker compose`: answers are capped, every call
+has a deadline, `ODOO_READONLY=true` leaves the write tools unpublished, and the server
+talks either over stdio or over http. What is missing is listed at the bottom.
 
 ## Why
 
@@ -32,12 +32,54 @@ any real system.
 ## Quick start
 
 ```bash
-docker compose up -d odoo db    # Odoo Community with demo data
-cp .env.example .env
-docker compose up mcp
+make up                         # Odoo Community with demo data, waits until it answers
+make seed                       # one customer, one product, a known quantity of it
+make demo                       # the whole path, printed as it happens
 ```
 
-Odoo takes about a minute to initialise its database on first start.
+The first `make up` takes a couple of minutes: Odoo builds its database and loads the
+demo data. Everything after that is seconds.
+
+To run the server itself rather than the demo:
+
+```bash
+make run                        # over stdio, the way a desktop client starts it
+docker compose up -d mcp        # over http, then curl localhost:8080/health
+```
+
+Port 8080 is a busy one. If something else on the machine already holds it, set
+`MCP_HOST_PORT` to anything free and compose will use that on the host side.
+
+## Demo
+
+`make demo` starts the server as its own process, talks to it over stdio exactly as an
+MCP client does, and walks the path a salesperson walks. Every line below came back over
+the protocol:
+
+```
+Connected. Tools on offer: confirm_sales_order, create_sales_order, get_sales_order, get_stock, list_invoices, search_partners
+
+1. Who is MCP Demo Customer?
+   MCP Demo Customer, Vienna, id 44
+
+2. What is on the shelf for MCP-DESK?
+   [MCP-DESK] MCP Demo Desk: 42 on hand, 42 free, in YourCompany
+
+3. Order 2 of them.
+   S00095 for MCP Demo Customer: quotation, 1147.7 USD
+
+4. Confirm it.
+   S00095 is now confirmed
+
+5. Read it back, lines and all.
+   2 x [MCP-DESK] MCP Demo Desk = 998
+
+6. And what a refusal sounds like.
+   Error executing tool confirm_sales_order: Order S00095 is confirmed. Only a quotation can be confirmed.
+```
+
+The order number climbs with every run, the rest stays put: that is what `make seed` is
+for, and running it twice changes nothing.
 
 ## How it works
 
@@ -70,16 +112,21 @@ name comes back as an unknown tool.
 **Errors are translated.** Odoo raises faults with long tracebacks. The server extracts
 the message and returns it in a form the agent can act on.
 
+**Health says nothing about Odoo.** `/health` answers for the process alone. The compose
+healthcheck watches it, and an Odoo that is briefly away must not get a working server
+restarted underneath it. Whether Odoo answers is visible on the first tool call.
+
 ## What is not here yet
 
 - paging through a cut answer: a tool says there is more, but there is no way to ask for
   the next page yet, only a narrower question
 - multi-company support: a company is pinned with `ODOO_COMPANY_IDS` and every answer
   names its own, which is not the same as running across several of them
-- cancelling an order, and editing one that already exists
-- a seeded data set, so a demo run shows the same numbers every time
-- the streamable http transport, so the server can run somewhere other than beside its
-  client
+- cancelling an order, and editing one that already exists: `action_cancel` over XML-RPC
+  returns a dialog to open and leaves the order as it was
+- creating a partner, so an agent can sell to someone who is not in the database yet
+- authentication on the http transport: it is meant for a private network, not the open
+  one
 
 ## License
 
