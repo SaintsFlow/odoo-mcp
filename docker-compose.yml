@@ -29,7 +29,12 @@ services:
     # of minutes. The modules listed here are the ones our tools read from:
     # partners come with base, orders with sale_management, quantities with
     # stock, invoices with account. Demo data is on by default, so no flag.
-    command: ["odoo", "-d", "odoo", "-i", "base,sale_management,stock,account"]
+    #
+    # l10n_at is the Austrian localization, and the product is built for the
+    # Austrian market. It does not convert the American demo companies, it adds
+    # a third one with euros and the Austrian chart of accounts, so the demo
+    # carries both and the tools have real Austrian invoices to read.
+    command: ["odoo", "-d", "odoo", "-i", "base,sale_management,stock,account,l10n_at"]
     volumes:
       - odoo-data:/var/lib/odoo
     healthcheck:
