@@ -9,8 +9,16 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 from src.errors import OdooError
+
+# A client decides from these whether to ask the user before running a tool.
+# One with no annotations at all counts as a tool that may change anything, so
+# the four that only read say so out loud: without that the destructive mark on
+# the write tools would put all six in the same bucket.
+LOOKS_ONLY = ToolAnnotations(read_only_hint=True)
+CHANGES_DATA = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False)
 
 
 def readable_errors[**Arguments, Answer](

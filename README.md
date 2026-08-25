@@ -3,7 +3,8 @@
 An MCP server for Odoo. It gives an LLM agent read and write access to partners, sales
 orders, stock levels and invoices in an Odoo instance.
 
-**Status:** early. The tool list below is the plan. Not all of it works yet.
+**Status:** early. All six tools below work against the Odoo in `docker compose`, and the
+limits that make a server safe to point at a real database are still being built.
 
 ## Why
 
@@ -22,8 +23,8 @@ any real system.
 | --- | --- |
 | `search_partners` | find customers and suppliers |
 | `get_sales_order` | read an order with its lines and status |
-| `create_sales_order` | create a draft order for a partner |
-| `confirm_sales_order` | confirm a draft order |
+| `create_sales_order` | create a quotation for a customer |
+| `confirm_sales_order` | turn a quotation into a confirmed order |
 | `get_stock` | current quantity on hand for a product |
 | `list_invoices` | invoices for a partner, filtered by state |
 
@@ -49,8 +50,13 @@ that matter and returned as flat records.
 write and much worse to use. Named tools carry their own validation and make it obvious
 what the agent is allowed to do.
 
-**Read and write are separated.** Write tools are marked in the schema so the client can
-require confirmation.
+**Read and write are separated.** The two write tools are marked destructive in their
+MCP annotations and the four read tools are marked read-only, so a client can ask its
+user before an order is created or confirmed.
+
+**Arguments are checked before Odoo is called.** Odoo takes an order line of zero
+quantity without a word, and answers an unknown id with its own record ids in the text.
+Both are caught here, so a refusal says what to do instead of what broke inside the ERP.
 
 **Errors are translated.** Odoo raises faults with long tracebacks. The server extracts
 the message and returns it in a form the agent can act on.
@@ -58,8 +64,11 @@ the message and returns it in a form the agent can act on.
 ## What is not here yet
 
 - pagination and result limits
-- multi-company support
-- tests against a seeded Odoo instance
+- a read-only mode that leaves the write tools unpublished
+- multi-company support: a company is pinned with `ODOO_COMPANY_IDS` and every answer
+  names its own, which is not the same as running across several of them
+- cancelling an order, and editing one that already exists
+- a seeded data set, so a demo run shows the same numbers every time
 
 ## License
 

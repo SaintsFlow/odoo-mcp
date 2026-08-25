@@ -1,8 +1,8 @@
 """Entry point of the MCP server.
 
-Wave 0 starts a server with no tools at all. That is enough to show the process
-comes up, the logs land in the right place and the transport is wired. Read
-tools arrive in wave 2, write tools in wave 3.
+Six tools live on it: four that only read Odoo and two that write to it. The
+two are marked destructive in their annotations, which is what lets a client
+ask its user before an order is created or confirmed.
 """
 
 import logging
