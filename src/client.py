@@ -18,6 +18,7 @@ import structlog
 from pydantic import BaseModel, SecretStr
 
 from src.errors import OdooApiError, OdooAuthError, OdooError, fault_message, translate_fault
+from src.models import link_id
 
 COMMON_ENDPOINT = "/xmlrpc/2/common"
 OBJECT_ENDPOINT = "/xmlrpc/2/object"
@@ -38,6 +39,9 @@ class OdooConfig(BaseModel):
     user: str
     # SecretStr so that a stray repr of the config cannot print the password.
     password: SecretStr
+    # Which company the answers come from. Left empty it is the company the
+    # user belongs to, which is the one thing that is always unambiguous.
+    company_id: int | None = None
 
     @classmethod
     def from_env(cls) -> "OdooConfig":
@@ -45,11 +49,19 @@ class OdooConfig(BaseModel):
         missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
         if missing:
             raise OdooError(f"Odoo is not configured: set {', '.join(missing)}. See .env.example.")
+
+        company = os.getenv("ODOO_COMPANY_ID", "").strip()
+        if company and not company.isdigit():
+            raise OdooError(
+                f"ODOO_COMPANY_ID has to be the numeric id of a company, not {company!r}."
+            )
+
         return cls(
             url=os.environ["ODOO_URL"],
             db=os.environ["ODOO_DB"],
             user=os.environ["ODOO_USER"],
             password=SecretStr(os.environ["ODOO_PASSWORD"]),
+            company_id=int(company) if company else None,
         )
 
     def endpoint(self, path: str) -> str:
@@ -66,27 +78,39 @@ class OdooClient:
 
     def __init__(self, config: OdooConfig) -> None:
         self._config = config
-        self._uid: int | None = None
+        self._session: tuple[int, int] | None = None
         # Without the lock a burst of first calls would all log in at once.
         self._login_lock = asyncio.Lock()
 
     async def authenticate(self) -> int:
         """Return the uid, logging in on the first call only."""
-        cached = self._uid
+        uid, _ = await self._open_session()
+        return uid
+
+    async def _open_session(self) -> tuple[int, int]:
+        """The uid and the company every call is pinned to, resolved once."""
+        cached = self._session
         if cached is not None:
             return cached
 
         async with self._login_lock:
             # Someone may have logged in while this call waited for the lock.
-            cached = self._uid
+            cached = self._session
             if cached is not None:
                 return cached
             uid = await asyncio.to_thread(self._authenticate_blocking)
-            self._uid = uid
+            company = self._config.company_id
+            if company is None:
+                company = await asyncio.to_thread(self._company_blocking, uid)
+            self._session = (uid, company)
             structlog.get_logger().info(
-                "odoo_authenticated", db=self._config.db, user=self._config.user, uid=uid
+                "odoo_authenticated",
+                db=self._config.db,
+                user=self._config.user,
+                uid=uid,
+                company_id=company,
             )
-            return uid
+            return self._session
 
     async def execute_kw(
         self,
@@ -96,10 +120,14 @@ class OdooClient:
         kwargs: dict[str, Any] | None = None,
     ) -> Any:
         """Call any method on any model. The generic door into Odoo."""
-        uid = await self.authenticate()
+        uid, company = await self._open_session()
         call_kwargs = dict(kwargs or {})
         # The caller's own context wins, it usually knows better than we do.
-        call_kwargs["context"] = {**DEFAULT_CONTEXT, **(call_kwargs.get("context") or {})}
+        call_kwargs["context"] = {
+            **DEFAULT_CONTEXT,
+            "allowed_company_ids": [company],
+            **(call_kwargs.get("context") or {}),
+        }
 
         log = structlog.get_logger().bind(model=model, method=method)
         started = time.perf_counter()
@@ -179,6 +207,38 @@ class OdooClient:
                 f"on database '{self._config.db}'."
             )
         return uid
+
+    def _company_blocking(self, uid: int) -> int:
+        """Which company the user belongs to. Runs in a worker thread.
+
+        This one goes straight to the proxy instead of through execute_kw,
+        because execute_kw needs the answer to build its own context.
+        """
+        proxy = self._proxy(OBJECT_ENDPOINT)
+        try:
+            rows = proxy.execute_kw(
+                self._config.db,
+                uid,
+                self._config.password.get_secret_value(),
+                "res.users",
+                "read",
+                [[uid]],
+                {"fields": ["company_id"], "context": DEFAULT_CONTEXT},
+            )
+        except xmlrpc.client.Fault as fault:
+            raise translate_fault(fault) from fault
+        except (xmlrpc.client.Error, OSError) as exc:
+            raise OdooApiError(f"Odoo at {self._config.url} did not answer: {exc}") from exc
+
+        company = None
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            company = link_id(rows[0].get("company_id"))
+        if company is None:
+            raise OdooApiError(
+                f"Odoo did not say which company user '{self._config.user}' belongs to. "
+                "Set ODOO_COMPANY_ID to pick one."
+            )
+        return company
 
     def _execute_kw_blocking(
         self,
