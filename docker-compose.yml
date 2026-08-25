@@ -47,19 +47,39 @@ services:
 
   mcp:
     build: .
-    # Optional on purpose: without it every compose command fails on a fresh
-    # clone, even "ps" and "down". Copy .env.example to .env before running mcp.
-    env_file:
-      - path: .env
-        required: false
     depends_on:
       odoo:
         condition: service_healthy
-    # The server talks over stdio for now, so it needs an open stdin to stay
-    # alive. Wave 5 adds the http transport and this port starts serving.
-    stdin_open: true
+    # Every value falls back to the demo stand, so a fresh clone runs with no
+    # .env at all. Compose reads .env by itself, so anything set there wins.
+    environment:
+      ODOO_URL: ${ODOO_URL:-http://odoo:8069}
+      ODOO_DB: ${ODOO_DB:-odoo}
+      ODOO_USER: ${ODOO_USER:-admin}
+      ODOO_PASSWORD: ${ODOO_PASSWORD:-admin}
+      ODOO_READONLY: ${ODOO_READONLY:-}
+      ODOO_TIMEOUT: ${ODOO_TIMEOUT:-30}
+      MCP_TRANSPORT: ${MCP_TRANSPORT:-http}
+      # Loopback is the default in code on purpose. Inside a container it would
+      # mean "reachable by nobody", so here it listens on the container's own
+      # interfaces and the port mapping below decides who gets in.
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8080
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Inside the container the port is fixed; on the host it can move, because
+    # 8080 is a popular port and something else may already hold it.
     ports:
-      - "8080:8080"
+      - "${MCP_HOST_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
 
 volumes:
   odoo-db:

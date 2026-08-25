@@ -5,9 +5,18 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import SecretStr
+from starlette.testclient import TestClient
 
 from src.client import OdooClient, OdooConfig
-from src.server import SERVER_NAME, build_server, configure_logging, read_only_from_env
+from src.errors import OdooError
+from src.server import (
+    SERVER_NAME,
+    build_http_app,
+    build_server,
+    configure_logging,
+    read_only_from_env,
+    transport_from_env,
+)
 
 READ_TOOLS = {"search_partners", "get_sales_order", "get_stock", "list_invoices"}
 WRITE_TOOLS = {"create_sales_order", "confirm_sales_order"}
@@ -38,6 +47,49 @@ async def test_a_write_tool_is_not_callable_in_read_only_mode() -> None:
             {"partner_id": 1, "lines": [{"product_id": 1, "quantity": 1}]},
         )
     assert "create_sales_order" in str(caught.value)
+
+
+def test_the_transport_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stdio unless asked otherwise, and a typo is not silently one of them."""
+    monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+    assert transport_from_env() == "stdio"
+
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    assert transport_from_env() == "stdio"
+
+    for asked in ("http", "HTTP", "streamable-http"):
+        monkeypatch.setenv("MCP_TRANSPORT", asked)
+        assert transport_from_env() == "streamable-http", f"{asked!r} should mean http"
+
+    monkeypatch.setenv("MCP_TRANSPORT", "carrier pigeon")
+    with pytest.raises(OdooError) as caught:
+        transport_from_env()
+    assert "carrier pigeon" in caught.value.message
+    assert "stdio" in caught.value.message
+
+
+def test_health_answers_without_touching_odoo() -> None:
+    """The compose healthcheck lives on this, so it must not depend on Odoo.
+
+    The client here points at a host that does not exist. A health check that
+    talked to Odoo would hang or fail; this one answers.
+    """
+    app = build_http_app(_offline_server())
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["server"] == SERVER_NAME
+    assert body["transport"] == "streamable-http"
+    assert body["version"]
+
+
+def test_the_mcp_endpoint_is_still_there_next_to_health() -> None:
+    """Adding our own route must not push the transport off its path."""
+    paths = {getattr(route, "path", None) for route in build_http_app(_offline_server()).routes}
+    assert "/health" in paths
+    assert "/mcp" in paths
 
 
 def test_read_only_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -48,7 +48,17 @@ jobs:
           # Without it a missing Odoo would skip the client tests and CI would
           # stay green while covering nothing.
           ODOO_REQUIRED: "1"
-        run: uv run pytest -q
+        # The coverage threshold sits in pyproject.toml, so this cannot drift
+        # apart from make check.
+        run: uv run pytest -q --cov=src
+
+      # The image and the http transport are part of the deliverable, and both
+      # break quietly: a missing file in the image or a server bound to loopback
+      # inside a container would pass every test above.
+      - name: The server answers over http from its container
+        run: |
+          docker compose up -d --build --wait mcp
+          curl --fail --silent --show-error http://localhost:8080/health
 
       - name: Odoo logs on failure
         if: failure()
